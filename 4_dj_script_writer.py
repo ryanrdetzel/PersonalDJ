@@ -6,10 +6,55 @@ Takes spot requirements and creates engaging DJ content
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict
 from pathlib import Path
 from openai import OpenAI
+
+def load_dj_personalities():
+    """Load DJ personality configuration"""
+    try:
+        with open('dj_personalities.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: dj_personalities.json not found, using default personality")
+        return None
+
+def get_dj_personality_for_time(hour: int):
+    """Get the appropriate DJ personality for a given hour"""
+    personalities = load_dj_personalities()
+    if not personalities:
+        return None
+
+    # Find which time slot this hour belongs to
+    for slot_name, slot_data in personalities["time_slots"].items():
+        if hour in slot_data["hours"]:
+            return slot_data["personality"]
+
+    # Fallback to default
+    return personalities.get("fallback_personality")
+
+def load_recent_dj_scripts(days_back: int = 3) -> List[str]:
+    """Load recent DJ scripts to avoid repetition"""
+    recent_scripts = []
+
+    # Look back through recent playlist directories
+    for i in range(1, days_back + 1):  # Start from yesterday
+        past_date = datetime.now() - timedelta(days=i)
+        date_str = past_date.strftime("%Y-%m-%d")
+        script_file = Path(f"playlists/{date_str}/dj_scripts.json")
+
+        if script_file.exists():
+            try:
+                with open(script_file, 'r') as f:
+                    data = json.load(f)
+                    for script_data in data.get('scripts', []):
+                        if 'script' in script_data:
+                            recent_scripts.append(script_data['script'])
+            except (FileNotFoundError, json.JSONDecodeError, KeyError):
+                continue
+
+    return recent_scripts
 
 class DJScriptWriter:
     def __init__(self, api_key: str = None):
@@ -37,9 +82,51 @@ class DJScriptWriter:
         tone = spot_requirement["tone"]
         elements = spot_requirement["include_elements"]
         context = spot_requirement["context"]
+        song_context = spot_requirement.get("song_context", {})
         duration_target = spot_requirement["duration_target_seconds"]
+        approximate_time = spot_requirement.get("approximate_time", "")
 
-        prompt = f"""
+        # Load recent DJ scripts to avoid repetition
+        recent_scripts = load_recent_dj_scripts()
+
+        # Get DJ personality for this time
+        try:
+            # Parse the approximate time to get hour
+            if approximate_time and ":" in approximate_time:
+                hour = int(approximate_time.split(":")[0])
+            else:
+                hour = datetime.now().hour
+        except:
+            hour = datetime.now().hour
+
+        dj_personality = get_dj_personality_for_time(hour)
+
+        # Format song context for the prompt
+        song_info = ""
+        if song_context.get("recent_songs"):
+            recent = song_context["recent_songs"]
+            song_info += f"\nSongs just played:\n"
+            for song in recent:
+                song_info += f"- \"{song['title']}\" by {song['artist']}\n"
+
+        if song_context.get("upcoming_songs"):
+            upcoming = song_context["upcoming_songs"]
+            song_info += f"\nSongs coming up:\n"
+            for song in upcoming:
+                song_info += f"- \"{song['title']}\" by {song['artist']}\n"
+
+        # Format recent scripts info for the prompt
+        previous_content = ""
+        if recent_scripts:
+            previous_content = f"""
+
+        Previous DJ messages from recent shows (avoid repeating these themes/content):
+        {chr(10).join(f"- {script[:100]}..." if len(script) > 100 else f"- {script}" for script in recent_scripts[-10:])}
+
+        IMPORTANT: Create fresh, original content that doesn't repeat themes, jokes, facts, or phrasing from the previous messages above."""
+
+        # Build personality-specific prompt
+        base_prompt = f"""
         You are an experienced on‑air radio DJ writing a very short link.
         Your delivery is warm, upbeat, and conversational — never like reading text.
         Speak like you're live on the mic with a smile in your voice.
@@ -54,6 +141,10 @@ class DJScriptWriter:
         - Mood: {context['mood']}
         - Genre playing: {context['genre']}
         {"- Special occasion: " + context['special_occasion'] if context.get('special_occasion') else ""}
+        {song_info}{previous_content}"""
+
+        # Define common style guide
+        style_guide = f"""
 
         Style guide:
         - Sound like a friendly radio DJ: energetic, positive, and natural.
@@ -62,6 +153,8 @@ class DJScriptWriter:
         - Sprinkle light, tasteful enthusiasm (a little "let's go", "right now", "good vibes").
         - Start with a hook, end with a smooth handoff back to the music.
         - If you reference the time, say it naturally (e.g., "just after three").
+        - Feel free to reference songs that just played or are coming up, but keep it natural.
+        - You can drop artist facts, tease upcoming tracks, or comment on what just played.
         - Avoid overusing exclamation points; energy should come from wording and rhythm.
 
         Tone examples (for feel only, do not copy verbatim):
@@ -77,6 +170,23 @@ class DJScriptWriter:
         - One tight paragraph (1–3 sentences) that fits ~{duration_target} seconds when spoken.
         - Only the script text, no titles, labels, or formatting.
         """
+
+        # Add personality-specific guidance
+        if dj_personality:
+            personality_prompt = f"""
+
+        DJ Personality: {dj_personality['name']}
+        {dj_personality['style_prompt']}
+
+        Your personality traits:
+        {chr(10).join(f"- {trait}" for trait in dj_personality['personality_traits'])}
+
+        Speaking style: {dj_personality['speaking_style']}
+        Energy level: {dj_personality['energy_level']}"""
+
+            prompt = base_prompt + personality_prompt + style_guide
+        else:
+            prompt = base_prompt + style_guide
 
         try:
             response = self.client.chat.completions.create(
@@ -143,6 +253,23 @@ class DJScriptWriter:
             "music_info": f"You're enjoying a specially curated {context['genre']} mix today. Each track chosen just for you.",
 
             "random_thought": "Music has a way of touching our souls and connecting us to moments in time. Let's create more of those moments right now.",
+
+            # New daily content types
+            "dad_joke": "Here's your daily dad joke - Why don't scientists trust atoms? Because they make up everything! Speaking of making up good vibes, here's more music.",
+
+            "kid_fact": "Fun fact for the day - a group of flamingos is called a 'flamboyance!' How cool is that? Just like this music is pretty cool too.",
+
+            "history_fact": "Did you know that the first music recording was made in 1860? That's over 160 years of recorded music history! Here's to adding more great moments to that timeline.",
+
+            "animal_fact": "Amazing animal fact - dolphins have names for each other! They use unique whistle signatures to identify themselves. Pretty incredible, right? Here's more incredible music.",
+
+            "global_fact": "Here's something fascinating from around the world - in Japan, there are more vending machines per capita than anywhere else on Earth. About one for every 23 people! Now that's convenience. Speaking of convenient, here's more great music.",
+
+            "country_comparison": "Interesting cultural difference - while Americans typically eat dinner around 6 PM, Spaniards often don't eat until 9 or 10 PM! Different cultures, same love for good food and music.",
+
+            "weird_fact": "Bizarre but true - honey never spoils! Archaeologists have found edible honey in ancient Egyptian tombs. Unlike honey, this next song is fresh and new.",
+
+            "gross_fact": "Icky but fascinating - your body produces about 1.5 liters of saliva every day! That's enough to fill a large water bottle. Thankfully, this next song will wash that thought away.",
 
             "general": "Thanks for listening to your personalized music stream. Let's get back to the music."
         }

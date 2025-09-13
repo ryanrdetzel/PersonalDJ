@@ -14,6 +14,30 @@ from typing import Dict, List
 from openai import OpenAI
 from style_presets import get_style, build_instructions, list_styles
 
+# Import DJ personality functions (define them here too for independence)
+def load_dj_personalities():
+    """Load DJ personality configuration"""
+    try:
+        with open('dj_personalities.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("Warning: dj_personalities.json not found, using default personality")
+        return None
+
+def get_dj_personality_for_time(hour: int):
+    """Get the appropriate DJ personality for a given hour"""
+    personalities = load_dj_personalities()
+    if not personalities:
+        return None
+
+    # Find which time slot this hour belongs to
+    for slot_name, slot_data in personalities["time_slots"].items():
+        if hour in slot_data["hours"]:
+            return slot_data["personality"]
+
+    # Fallback to default
+    return personalities.get("fallback_personality")
+
 
 class TTSGenerator:
     def __init__(
@@ -24,6 +48,7 @@ class TTSGenerator:
         speed: float = 1.08,
         style_name: str = "morning_radio",
         extra_instructions: str = None,
+        dryrun: bool = False,
     ):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.voice = voice
@@ -33,6 +58,7 @@ class TTSGenerator:
         self.style = None
         self.extra_instructions = extra_instructions
         self.output_dir = Path("dj_spots")
+        self.dryrun = dryrun
 
         if self.api_key:
             self.client = OpenAI(api_key=self.api_key)
@@ -57,6 +83,9 @@ class TTSGenerator:
         """
         Generate MP3 audio from script text
         """
+        if self.dryrun:
+            return self._simulate_audio_generation(script)
+
         if not self.client:
             print(
                 f"Skipping audio generation for spot {script['spot_number']} - No API key"
@@ -67,6 +96,19 @@ class TTSGenerator:
         script_text = script["script"]
         spot_type = script.get("type")
         spot_tone = script.get("tone")
+        approximate_time = script.get("approximate_time", "")
+
+        # Determine voice based on DJ personality for this time
+        voice_to_use = self.voice  # Default fallback
+        try:
+            if approximate_time and ":" in approximate_time:
+                hour = int(approximate_time.split(":")[0])
+                dj_personality = get_dj_personality_for_time(hour)
+                if dj_personality and "voice" in dj_personality:
+                    voice_to_use = dj_personality["voice"]
+                    print(f"Using {dj_personality['name']}'s voice: {voice_to_use}")
+        except Exception as e:
+            print(f"Could not determine personality voice, using default: {e}")
 
         filename = f"dj_spot_{spot_number:03d}_{spot_type}.mp3"
         file_path = self.today_dir / filename
@@ -85,7 +127,7 @@ class TTSGenerator:
         try:
             response = self.client.audio.speech.create(
                 model=self.model,
-                voice=self.voice,
+                voice=voice_to_use,
                 input=script_text,
                 instructions=instructions,
                 speed=self.speed,
@@ -99,6 +141,40 @@ class TTSGenerator:
         except Exception as e:
             print(f"Error generating audio for spot {spot_number}: {e}")
             return None
+
+    def _simulate_audio_generation(self, script: Dict) -> str:
+        """
+        Simulate audio generation for dryrun mode
+        """
+        spot_number = script["spot_number"]
+        spot_type = script.get("type")
+        approximate_time = script.get("approximate_time", "")
+        script_text = script["script"]
+
+        # Determine voice based on DJ personality for this time
+        voice_to_use = self.voice  # Default fallback
+        personality_name = "Default"
+        try:
+            if approximate_time and ":" in approximate_time:
+                hour = int(approximate_time.split(":")[0])
+                dj_personality = get_dj_personality_for_time(hour)
+                if dj_personality and "voice" in dj_personality:
+                    voice_to_use = dj_personality["voice"]
+                    personality_name = dj_personality["name"]
+        except Exception:
+            pass
+
+        filename = f"dj_spot_{spot_number:03d}_{spot_type}.mp3"
+        file_path = self.today_dir / filename
+
+        # Simulate the file creation (just create empty file for dryrun)
+        file_path.touch()
+
+        print(f"[DRYRUN] Would generate audio: {filename}")
+        print(f"         Voice: {voice_to_use} ({personality_name})")
+        print(f"         Script: {script_text[:60]}{'...' if len(script_text) > 60 else ''}")
+
+        return str(file_path)
 
     def generate_all_audio(self, scripts_data: Dict) -> List[Dict]:
         """
@@ -154,6 +230,7 @@ def generate_tts_audio(
     speed: float = 1.08,
     style_name: str = "morning_radio",
     extra_instructions: str = None,
+    dryrun: bool = False,
 ) -> Dict:
     """
     Main function to generate TTS audio from scripts
@@ -179,6 +256,7 @@ def generate_tts_audio(
         speed=speed,
         style_name=style_name,
         extra_instructions=extra_instructions,
+        dryrun=dryrun,
     )
     audio_files = generator.generate_all_audio(scripts_data)
 
@@ -235,6 +313,11 @@ def main():
         default=None,
         help="Optional extra guidance to append to the style instructions",
     )
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        help="Simulate audio generation without making API calls (for debugging)",
+    )
     args = parser.parse_args()
 
     audio_data = generate_tts_audio(
@@ -243,6 +326,7 @@ def main():
         speed=args.speed,
         style_name=args.style,
         extra_instructions=args.extra_instructions,
+        dryrun=args.dryrun,
     )
 
     # Get playlist directory from audio data or config
@@ -264,12 +348,15 @@ def main():
     with open(output_file, "w") as f:
         json.dump(audio_data, f, indent=2)
 
-    print(f"\nGenerated {audio_data['total_audio_files']} audio files")
-    print(f"Audio saved to: {audio_data['output_directory']}")
+    dryrun_prefix = "[DRYRUN] " if args.dryrun else ""
+    print(f"\n{dryrun_prefix}Generated {audio_data['total_audio_files']} audio files")
+    print(f"{dryrun_prefix}Audio saved to: {audio_data['output_directory']}")
     print(f"Voice used: {audio_data['voice_used']}")
     print(f"Model used: {audio_data.get('model_used')}")
     print(f"Speed used: {audio_data.get('speed_used')}")
     print(f"Metadata saved to: {output_file}")
+    if args.dryrun:
+        print("\\n💡 This was a dry run - no actual API calls were made.")
 
     return audio_data
 

@@ -60,19 +60,34 @@ def run_pipeline(
     voice: str = "alloy",
     style: str = "morning_radio",
     extra_instructions: str | None = None,
+    start_time: str | None = None,
+    start_date: str | None = None,
+    dryrun: bool = False,
 ):
     """
     Run the complete PersonalDJ pipeline
     """
     print("\n" + "="*60)
-    print("🎵 PersonalDJ Pipeline Starting")
+    pipeline_mode = "🎵 PersonalDJ Pipeline Starting"
+    if dryrun:
+        pipeline_mode += " (DRY RUN MODE)"
+    print(pipeline_mode)
     print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if dryrun:
+        print("💡 Dry run mode: Audio generation will be simulated")
     print("="*60)
 
     check_dependencies()
 
+    # Prepare start time arguments for playlist selector
+    playlist_args = []
+    if start_time:
+        playlist_args += ["--start-time", start_time]
+    if start_date:
+        playlist_args += ["--start-date", start_date]
+
     steps = [
-        ("1_playlist_selector.py", "Selecting playlist genre/mood for today", None),
+        ("1_playlist_selector.py", "Selecting playlist genre/mood for today", playlist_args),
         ("2_music_curator.py", "Curating music based on preferences and history", None),
         ("3_dj_spot_planner.py", "Planning DJ spot placement and timing", None),
         ("4_dj_script_writer.py", "Writing creative DJ scripts", None),
@@ -85,7 +100,9 @@ def run_pipeline(
         ]
         if extra_instructions:
             tts_args += ["--extra-instructions", extra_instructions]
-        steps.append(("5_tts_generator.py", "Generating DJ audio with TTS", tts_args))
+        if dryrun:
+            tts_args += ["--dryrun"]
+        steps.append(("5_tts_generator.py", "Generating DJ audio with TTS" + (" (dry run)" if dryrun else ""), tts_args))
 
     steps.append(("6_playlist_assembler.py", "Assembling final M3U playlist", None))
 
@@ -125,19 +142,21 @@ def run_pipeline(
                 pass
 
         if final_data:
+            try:
+                print(f"\n📊 Playlist Statistics:")
+                print(f"   • Total songs: {final_data['total_songs']}")
+                print(f"   • DJ spots: {final_data['total_dj_spots']}")
+                print(f"   • Playlist file: {final_data['playlist_file']}")
+                print(f"   • Streaming URL: {final_data['base_url']}/{final_data['streaming_file']}")
 
-            print(f"\n📊 Playlist Statistics:")
-            print(f"   • Total songs: {final_data['total_songs']}")
-            print(f"   • DJ spots: {final_data['total_dj_spots']}")
-            print(f"   • Playlist file: {final_data['playlist_file']}")
-            print(f"   • Streaming URL: {final_data['base_url']}/{final_data['streaming_file']}")
+                print(f"\n🎧 To play your playlist:")
+                print(f"   1. Start a local server: python -m http.server 8000")
+                print(f"   2. Stream from: {final_data['base_url']}/{final_data['streaming_file']}")
+                print(f"   3. Or use the M3U file: {final_data['playlist_file']}")
 
-            print(f"\n🎧 To play your playlist:")
-            print(f"   1. Start a local server: python -m http.server 8000")
-            print(f"   2. Stream from: {final_data['base_url']}/{final_data['streaming_file']}")
-            print(f"   3. Or use the M3U file: {final_data['playlist_file']}")
-
-        except FileNotFoundError:
+            except (KeyError, TypeError):
+                print("\nPlaylist generated but summary data incomplete.")
+        else:
             print("\nPlaylist generated but summary not available.")
 
     return success
@@ -152,7 +171,12 @@ def main():
     parser.add_argument(
         "--skip-audio",
         action="store_true",
-        help="Skip TTS audio generation (useful for testing)"
+        help="Skip TTS audio generation entirely"
+    )
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        help="Simulate audio generation without making API calls (faster for debugging)"
     )
     parser.add_argument(
         "--voice",
@@ -175,6 +199,16 @@ def main():
         action="store_true",
         help="Clean intermediate files after completion"
     )
+    parser.add_argument(
+        "--start-time",
+        default=None,
+        help="When the playlist will start playing (HH:MM format, e.g. 08:00)"
+    )
+    parser.add_argument(
+        "--start-date",
+        default=None,
+        help="Date when playlist will start (YYYY-MM-DD format, defaults to today)"
+    )
 
     args = parser.parse_args()
 
@@ -183,6 +217,9 @@ def main():
         voice=args.voice,
         style=args.style,
         extra_instructions=args.extra_instructions,
+        start_time=getattr(args, 'start_time'),
+        start_date=getattr(args, 'start_date'),
+        dryrun=args.dryrun,
     )
 
     if success and args.clean:

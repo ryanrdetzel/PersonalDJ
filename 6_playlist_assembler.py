@@ -5,14 +5,15 @@ Creates the final playlist file for streaming
 """
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict
 import urllib.parse
 
 class PlaylistAssembler:
-    def __init__(self, base_url: str = "http://localhost:8000"):
-        self.base_url = base_url
+    def __init__(self, base_url: str = None):
+        self.base_url = base_url or os.getenv("PLAYLIST_BASE_URL", "http://localhost:8000")
         self.output_dir = Path("playlists")
         self.output_dir.mkdir(exist_ok=True)
 
@@ -138,7 +139,7 @@ class PlaylistAssembler:
 def assemble_final_playlist(music_file: str = "curated_playlist.json",
                           audio_file: str = "dj_audio.json",
                           spot_plan_file: str = "dj_spot_plan.json",
-                          base_url: str = "http://localhost:8000") -> Dict:
+                          base_url: str = None) -> Dict:
     """
     Main function to assemble the final playlist
     """
@@ -201,8 +202,8 @@ def main():
     """
     import argparse
     parser = argparse.ArgumentParser(description="Assemble final M3U playlist")
-    parser.add_argument("--base-url", default="http://localhost:8000",
-                       help="Base URL for streaming files")
+    parser.add_argument("--base-url", default=os.getenv("PLAYLIST_BASE_URL", "http://localhost:8000"),
+                       help="Base URL for streaming files (defaults to PLAYLIST_BASE_URL env var)")
     args = parser.parse_args()
 
     playlist_data = assemble_final_playlist(base_url=args.base_url)

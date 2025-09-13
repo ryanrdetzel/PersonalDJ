@@ -96,19 +96,61 @@ def get_day_based_genre() -> Dict:
 
 def get_weather_modifier(config: Dict) -> Dict:
     """
-    Placeholder for weather-based modifications
-    In future, this will call a weather API
+    Get current weather and apply music modifications
     """
-    weather_conditions = ["sunny", "cloudy", "rainy", "snowy"]
-    weather = random.choice(weather_conditions)
+    try:
+        from weather_service import WeatherService
+        weather_service = WeatherService()
+        weather_data = weather_service.get_today_weather()
 
-    config["weather"] = weather
+        if weather_data:
+            # Get main weather condition and format it nicely
+            weather_main = weather_data['weather']['main'].lower()
+            description = weather_data['weather']['description']
+            temp_f = weather_data['temperature']['current']
 
-    if weather == "rainy":
-        config["mood"] = MoodType.RELAXED.value
-        config["energy_level"] = max(1, config["energy_level"] - 2)
-    elif weather == "sunny":
-        config["energy_level"] = min(10, config["energy_level"] + 1)
+            # Map OpenWeather conditions to our simpler categories and detailed description
+            weather_map = {
+                'clear': 'sunny',
+                'clouds': 'cloudy',
+                'rain': 'rainy',
+                'drizzle': 'rainy',
+                'thunderstorm': 'stormy',
+                'snow': 'snowy',
+                'mist': 'cloudy',
+                'fog': 'cloudy',
+                'haze': 'cloudy'
+            }
+
+            simple_weather = weather_map.get(weather_main, weather_main)
+            config["weather"] = f"{simple_weather} and {temp_f:.0f}°F"
+            config["weather_description"] = description
+            config["temperature"] = temp_f
+
+            # Apply mood modifications based on weather
+            if weather_main in ['rain', 'drizzle', 'thunderstorm']:
+                config["mood"] = MoodType.RELAXED.value
+                config["energy_level"] = max(1, config["energy_level"] - 2)
+            elif weather_main == 'clear':
+                config["energy_level"] = min(10, config["energy_level"] + 1)
+            elif weather_main == 'snow':
+                config["mood"] = MoodType.RELAXED.value
+                config["energy_level"] = max(2, config["energy_level"] - 1)
+            elif temp_f > 75:  # Hot weather
+                config["energy_level"] = min(10, config["energy_level"] + 1)
+            elif temp_f < 40:  # Cold weather
+                config["energy_level"] = max(2, config["energy_level"] - 1)
+
+        else:
+            # Fallback to random weather if API fails
+            weather_conditions = ["sunny", "cloudy", "rainy", "snowy"]
+            config["weather"] = random.choice(weather_conditions)
+
+    except Exception as e:
+        print(f"Weather API error: {e}")
+        # Fallback to random weather
+        weather_conditions = ["sunny", "cloudy", "rainy", "snowy"]
+        config["weather"] = random.choice(weather_conditions)
 
     return config
 
@@ -130,13 +172,22 @@ def get_special_occasion_modifier(config: Dict) -> Dict:
 
     return config
 
-def select_playlist_config() -> Dict:
+def select_playlist_config(start_datetime: datetime = None) -> Dict:
     """
     Main function to determine today's playlist configuration
     """
     config = get_day_based_genre()
     config = get_weather_modifier(config)
     config = get_special_occasion_modifier(config)
+
+    # Add playlist start time
+    if start_datetime:
+        config["playlist_start_time"] = start_datetime.isoformat()
+        config["playlist_start_hour"] = start_datetime.hour
+    else:
+        now = datetime.now()
+        config["playlist_start_time"] = now.isoformat()
+        config["playlist_start_hour"] = now.hour
 
     config["playlist_duration_hours"] = 8
     config["songs_per_hour"] = 15
@@ -155,18 +206,36 @@ def main():
     """
     Create dated directory and output playlist configuration as JSON
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate playlist configuration")
+    parser.add_argument("--start-time", help="Start time in HH:MM format")
+    parser.add_argument("--start-date", help="Start date in YYYY-MM-DD format")
+    args = parser.parse_args()
+
+    # Parse start datetime
+    start_datetime = None
+    if args.start_time or args.start_date:
+        start_date = args.start_date if args.start_date else datetime.now().strftime("%Y-%m-%d")
+        start_time = args.start_time if args.start_time else "08:00"
+
+        try:
+            start_datetime = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M")
+        except ValueError as e:
+            print(f"Error parsing start time: {e}")
+            return
+
     # Create dated directory
-    now = datetime.now()
-    date_str = now.strftime("%Y-%m-%d")
-    playlist_dir = Path("playlists") / date_str
+    date_for_dir = start_datetime.strftime("%Y-%m-%d") if start_datetime else datetime.now().strftime("%Y-%m-%d")
+    playlist_dir = Path("playlists") / date_for_dir
     playlist_dir.mkdir(parents=True, exist_ok=True)
 
     # Store the directory path in environment variable for other scripts
     os.environ["PLAYLIST_DIR"] = str(playlist_dir)
 
-    config = select_playlist_config()
+    config = select_playlist_config(start_datetime)
     config["playlist_dir"] = str(playlist_dir)
-    config["date"] = date_str
+    config["date"] = date_for_dir
 
     print(json.dumps(config, indent=2))
     print(f"\nPlaylist directory: {playlist_dir}")
