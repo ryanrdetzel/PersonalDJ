@@ -1,0 +1,57 @@
+# Project data/output (never commit)
+music
+dj_spots
+playlists
+streaming/
+*.db
+*.m3u
+
+# Root-level generated artifacts (back-compat files)
+playlist_config.json
+curated_playlist.json
+dj_spot_plan.json
+dj_scripts.json
+dj_audio.json
+playlist_final.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python build/runtime
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Env files
+.env
+.env.*
+.envrc
+*.env
+
+# Test/coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs
+*.log
+
+.DS_Store
+__pycache__/
+*.pyc
+playlist_config.json
+curated_playlist.json
+dj_spot_plan.json
+dj_scripts.json
+dj_audio.json
+playlist_final.json
