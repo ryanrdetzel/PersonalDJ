@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 from pathlib import Path
 from openai import OpenAI
+from event_service import EventService
 
 def load_dj_personalities():
     """Load DJ personality configuration"""
@@ -65,6 +66,9 @@ class DJScriptWriter:
             self.client = None
             print("Warning: No OpenAI API key found. Using fallback scripts.")
 
+        # Initialize event service
+        self.event_service = EventService()
+
     def generate_script(self, spot_requirement: Dict) -> str:
         """
         Generate a DJ script based on requirements
@@ -115,6 +119,28 @@ class DJScriptWriter:
             for song in upcoming:
                 song_info += f"- \"{song['title']}\" by {song['artist']}\n"
 
+        # Get event context
+        event_info = ""
+        event_context = spot_requirement.get("event_context", {})
+        if event_context and event_context.get("available"):
+            relevant_events = event_context.get("mentions", {})
+
+            # Add events based on spot type or general relevance
+            if spot_type in ["event_mention", "today_events"] or any(relevant_events.values()):
+                event_info += f"\n\nUpcoming Events (mention naturally if relevant to the vibe):\n"
+
+                # Prioritize events based on timeframe
+                for timeframe in ["happening_now", "today", "tonight", "tomorrow", "this_week"]:
+                    events = relevant_events.get(timeframe, [])
+                    if events and len(events) > 0:
+                        timeframe_name = timeframe.replace("_", " ").title()
+                        if timeframe == "happening_now":
+                            timeframe_name = "Right Now"
+                        event_info += f"{timeframe_name}:\n"
+                        for event in events[:2]:  # Limit to 2 per timeframe
+                            event_info += f"- {event}\n"
+                        event_info += "\n"
+
         # Format recent scripts info for the prompt
         previous_content = ""
         if recent_scripts:
@@ -141,7 +167,7 @@ class DJScriptWriter:
         - Mood: {context['mood']}
         - Genre playing: {context['genre']}
         {"- Special occasion: " + context['special_occasion'] if context.get('special_occasion') else ""}
-        {song_info}{previous_content}"""
+        {song_info}{event_info}{previous_content}"""
 
         # Define common style guide
         style_guide = f"""
@@ -271,6 +297,15 @@ class DJScriptWriter:
 
             "gross_fact": "Icky but fascinating - your body produces about 1.5 liters of saliva every day! That's enough to fill a large water bottle. Thankfully, this next song will wash that thought away.",
 
+            # Event-related fallback content
+            "event_mention": f"Hope you've got something fun planned for this {context['day_name']}! Whether you're out and about or staying in, you've got the perfect soundtrack right here.",
+
+            "today_events": f"Whatever's on your schedule today, make sure to take some time to enjoy the moment. Speaking of enjoying the moment, here's more great music.",
+
+            "tonight_events": f"Evening plans coming up? Whether you're heading out or staying cozy at home, let the music set the perfect mood.",
+
+            "tonight_preview": f"As we head into tonight, hope you've got something special planned. Either way, we'll keep the perfect vibe going with more music.",
+
             "general": "Thanks for listening to your personalized music stream. Let's get back to the music."
         }
 
@@ -282,7 +317,33 @@ class DJScriptWriter:
         """
         scripts = []
 
+        # Get event configuration and context
+        config = spot_plan.get("config", {})
+        event_config = config.get("events", {})
+        event_mentions = {}
+
+        if event_config.get("mention_events", False) and event_config.get("ical_urls"):
+            try:
+                # Get event mentions once for all spots
+                event_mentions = self.event_service.get_dj_event_mentions(
+                    event_config["ical_urls"]
+                )
+                print(f"Loaded events: {sum(len(events) for events in event_mentions.values())} total")
+            except Exception as e:
+                print(f"Warning: Could not load events: {e}")
+                event_mentions = {}
+
         for spot in spot_plan["spots"]:
+            # Add event context to spot if events are available
+            if event_mentions:
+                spot["event_context"] = {
+                    "available": True,
+                    "mentions": event_mentions,
+                    "config": event_config
+                }
+            else:
+                spot["event_context"] = {"available": False}
+
             script_text = self.generate_script(spot)
 
             script_data = {

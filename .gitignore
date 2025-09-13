@@ -5,7 +5,7 @@ playlists
 streaming/
 *.db
 *.m3u
-
+cache/
 # Root-level generated artifacts (back-compat files)
 playlist_config.json
 curated_playlist.json
@@ -42,6 +42,7 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+debug_*
 
 # Logs
 *.log

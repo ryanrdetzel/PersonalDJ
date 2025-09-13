@@ -172,6 +172,29 @@ def get_special_occasion_modifier(config: Dict) -> Dict:
 
     return config
 
+def get_event_configuration() -> Dict:
+    """
+    Get event configuration from environment or default settings
+    """
+    # Get iCal URLs from environment variable or use empty list
+    ical_urls_env = os.getenv('ICAL_URLS', '')
+    ical_urls = [url.strip() for url in ical_urls_env.split(',') if url.strip()] if ical_urls_env else []
+
+    event_config = {
+        "ical_urls": ical_urls,
+        "mention_events": len(ical_urls) > 0,  # Only mention if URLs configured
+        "event_mention_frequency": "moderate",  # low, moderate, high
+        "include_all_day_events": True,
+        "max_events_per_mention": 3,
+        "preferred_mention_times": {
+            "morning": ["today", "tonight"],
+            "afternoon": ["tonight", "tomorrow"],
+            "evening": ["tonight", "tomorrow", "this_week"]
+        }
+    }
+
+    return event_config
+
 def select_playlist_config(start_datetime: datetime = None) -> Dict:
     """
     Main function to determine today's playlist configuration
@@ -199,6 +222,9 @@ def select_playlist_config(start_datetime: datetime = None) -> Dict:
         "max_song_length_minutes": 7,
         "min_song_length_minutes": 2
     }
+
+    # Add event configuration
+    config["events"] = get_event_configuration()
 
     return config
 

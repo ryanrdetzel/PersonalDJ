@@ -104,22 +104,25 @@ class DJSpotPlanner:
 
         # Regular time-based content (weekends or non-priority hours)
         elif hour == 7:
-            types.extend(["morning_greeting", "weather", "daily_schedule"])
+            types.extend(["morning_greeting", "weather", "daily_schedule", "today_events"])
         elif hour in [8, 9]:
-            types.extend(["time_check", "motivation", "fun_fact"])
+            types.extend(["time_check", "motivation", "fun_fact", "today_events"])
         elif hour == 12:
-            types.extend(["lunch_reminder", "afternoon_greeting"])
+            types.extend(["lunch_reminder", "afternoon_greeting", "tonight_preview"])
         elif hour in [15, 16]:
-            types.extend(["afternoon_boost", "trivia", "joke"])
+            types.extend(["afternoon_boost", "trivia", "joke", "tonight_preview", "event_mention"])
         elif hour == 18:
-            types.extend(["evening_greeting", "dinner_suggestion"])
+            types.extend(["evening_greeting", "dinner_suggestion", "tonight_events"])
         elif hour >= 20:
-            types.extend(["evening_wind_down", "tomorrow_preview"])
+            types.extend(["evening_wind_down", "tomorrow_preview", "event_mention"])
         else:
-            types.extend(["time_check", "music_info", "random_thought"])
+            types.extend(["time_check", "music_info", "random_thought", "event_mention"])
 
+        # Add event mention possibility at top of hour
         if spot_time.minute == 0:
             types.append("hour_announcement")
+            if random.random() < 0.3:  # 30% chance of event mention at top of hour
+                types.append("event_mention")
 
         return random.choice(types) if types else "general"
 
@@ -226,6 +229,11 @@ class DJSpotPlanner:
             "country_comparison": "insightful and curious",
             "weird_fact": "amusing and surprising",
             "gross_fact": "playfully disgusted but entertaining",
+            # Event-related content types
+            "event_mention": "excited and informative",
+            "today_events": "helpful and encouraging",
+            "tonight_events": "anticipatory and enthusiastic",
+            "tonight_preview": "forward-looking and energetic",
             "general": "friendly and engaging"
         }
 
@@ -262,6 +270,11 @@ class DJSpotPlanner:
             "country_comparison": ["cultural_difference", "interesting_contrast", "world_perspective"],
             "weird_fact": ["unusual_fact", "surprising_info", "quirky_knowledge"],
             "gross_fact": ["icky_but_interesting", "science_fact", "eww_factor"],
+            # Event-related content types
+            "event_mention": ["event_details", "time_reference", "location_info"],
+            "today_events": ["today_schedule", "event_highlights", "timing_info"],
+            "tonight_events": ["evening_plans", "event_preview", "time_details"],
+            "tonight_preview": ["evening_outlook", "event_teaser", "anticipation"],
             "general": ["greeting", "music_transition"]
         }
 
