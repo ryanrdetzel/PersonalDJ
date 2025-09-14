@@ -9,7 +9,9 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
+import subprocess
+import re
 
 from openai import OpenAI
 from style_presets import get_style, build_instructions, list_styles
@@ -37,6 +39,103 @@ def get_dj_personality_for_time(hour: int):
 
     # Fallback to default
     return personalities.get("fallback_personality")
+
+def measure_lufs(filepath: Path) -> Optional[float]:
+    """Measure LUFS loudness of audio file using ffmpeg"""
+    try:
+        # Use ffmpeg to analyze loudness
+        result = subprocess.run([
+            'ffmpeg', '-i', str(filepath), '-af', 'loudnorm=print_format=json',
+            '-f', 'null', '-'
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            return None
+
+        # Parse JSON output from stderr
+        output = result.stderr
+
+        # Extract LUFS value from JSON output
+        lufs_match = re.search(r'"input_i"\s*:\s*"([^"]+)"', output)
+        if lufs_match:
+            return float(lufs_match.group(1))
+
+        return None
+    except Exception as e:
+        print(f"  Error measuring LUFS: {e}")
+        return None
+
+def normalize_audio_file(filepath: Path, target_lufs: float = -14.0) -> bool:
+    """Normalize audio file to target LUFS using FFmpeg loudnorm filter"""
+    try:
+        print(f"  Normalizing audio to {target_lufs} LUFS...")
+
+        # Measure current LUFS
+        current_lufs = measure_lufs(filepath)
+        if current_lufs is None:
+            print(f"  Failed to measure current LUFS")
+            return False
+
+        print(f"  Current LUFS: {current_lufs:.1f}")
+
+        # Skip if already close to target (within 0.5 LUFS)
+        if abs(current_lufs - target_lufs) < 0.5:
+            print(f"  Already normalized (within 0.5 LUFS of target)")
+            return True
+
+        # Create temp file for processing
+        temp_file = filepath.parent / f"temp_{filepath.name}"
+
+        # First pass: analyze
+        analyze_cmd = [
+            'ffmpeg', '-i', str(filepath),
+            '-af', f'loudnorm=I={target_lufs}:dual_mono=true:TP=-1.5:LRA=11:print_format=json',
+            '-f', 'null', '-'
+        ]
+
+        analyze_result = subprocess.run(analyze_cmd, capture_output=True, text=True)
+
+        if analyze_result.returncode != 0:
+            print(f"  Error analyzing audio: {analyze_result.stderr}")
+            return False
+
+        # Parse the JSON output for normalization parameters
+        stderr_output = analyze_result.stderr
+        json_match = re.search(r'\{[^}]*"input_i"[^}]*\}', stderr_output)
+        if not json_match:
+            print("  Could not parse loudnorm analysis")
+            return False
+
+        # Second pass: normalize using analysis data
+        normalize_cmd = [
+            'ffmpeg', '-i', str(filepath),
+            '-af', f'loudnorm=I={target_lufs}:TP=-1.5:LRA=11:' +
+                   f'measured_I={current_lufs}:measured_LRA=11:measured_TP=-1.5:measured_thresh=-24.0:offset=0.0',
+            '-ar', '44100', '-y', str(temp_file)
+        ]
+
+        normalize_result = subprocess.run(normalize_cmd, capture_output=True, text=True)
+
+        if normalize_result.returncode == 0 and temp_file.exists():
+            # Replace original with normalized version
+            filepath.unlink()
+            temp_file.rename(filepath)
+
+            # Measure final LUFS
+            final_lufs = measure_lufs(filepath)
+            if final_lufs:
+                print(f"  Normalized LUFS: {final_lufs:.1f}")
+
+            return True
+        else:
+            print(f"  Error normalizing audio: {normalize_result.stderr}")
+            if temp_file.exists():
+                temp_file.unlink()
+            return False
+
+    except Exception as e:
+        print(f"  Error normalizing audio: {e}")
+        return False
 
 
 class TTSGenerator:
@@ -135,6 +234,12 @@ class TTSGenerator:
 
             response.stream_to_file(str(file_path))
             print(f"Generated audio: {filename}")
+
+            # Normalize the generated audio to match music level
+            if normalize_audio_file(file_path, target_lufs=-14.0):
+                print(f"Normalized TTS audio to -14.0 LUFS")
+            else:
+                print(f"Warning: Failed to normalize TTS audio")
 
             return str(file_path)
 

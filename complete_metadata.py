@@ -207,6 +207,44 @@ class MetadataCompleter:
 
         return None
 
+    def search_lastfm_artist(self, artist: str) -> Optional[Dict]:
+        """Search Last.fm for artist-level genre information when track has no genre"""
+        if not self.lastfm_api_key:
+            return None
+
+        try:
+            params = {
+                "method": "artist.getInfo",
+                "api_key": self.lastfm_api_key,
+                "artist": artist,
+                "format": "json"
+            }
+
+            response = requests.get(
+                "https://ws.audioscrobbler.com/2.0/",
+                params=params,
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if "artist" in data:
+                    artist_data = data["artist"]
+
+                    # Extract top tags as genres
+                    tags = artist_data.get("tags", {}).get("tag", [])
+                    genre = tags[0]["name"].title() if tags else None
+
+                    return {
+                        "genre": genre,
+                        "artist": artist_data.get("name")
+                    }
+
+        except Exception as e:
+            print(f"  Last.fm artist search error: {e}")
+
+        return None
+
     def search_musicbrainz(self, title: str, artist: str) -> Optional[Dict]:
         """Search MusicBrainz for track metadata"""
         try:
@@ -606,9 +644,17 @@ class MetadataCompleter:
         if self.lastfm_api_key:
             print("  Searching Last.fm...")
             lastfm_data = self.search_lastfm(title, artist)
-            if lastfm_data:
+            if lastfm_data and lastfm_data.get('genre'):
                 print(f"    Found: {lastfm_data.get('genre')} genre")
                 metadata_sources.append(lastfm_data)
+            else:
+                # If track search found no genre, try artist-level search
+                if artist and artist != 'Unknown Artist':
+                    print("  Trying Last.fm artist fallback...")
+                    artist_data = self.search_lastfm_artist(artist)
+                    if artist_data and artist_data.get('genre'):
+                        print(f"    Found artist genre: {artist_data.get('genre')}")
+                        metadata_sources.append(artist_data)
 
         # MusicBrainz
         print("  Searching MusicBrainz...")
