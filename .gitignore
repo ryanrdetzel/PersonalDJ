@@ -3,7 +3,7 @@ music
 dj_spots
 playlists
 streaming/
-*.db
+*.db*
 *.m3u
 cache/
 README.private.md

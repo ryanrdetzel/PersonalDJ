@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DJ Spot Planner - Calculates when and how many DJ spots to inject
-Based on playlist duration and desired frequency
+DJ Spot Planner - Calculates DJ spots based on configured schedule times
+Uses precise timing configuration instead of automatic intervals
 """
 
 import json
@@ -11,124 +11,165 @@ import random
 from pathlib import Path
 
 class DJSpotPlanner:
-    def __init__(self, minutes_between_spots: int = 20):
-        self.minutes_between_spots = minutes_between_spots
-        # Daily content that should be distributed across weekday slots
-        self.daily_morning_content = ['dad_joke', 'kid_fact', 'history_fact', 'animal_fact']
-        self.daily_evening_content = ['global_fact', 'country_comparison', 'weird_fact', 'gross_fact', 'animal_fact']
-        self.used_content_today = set()
+    def __init__(self, schedule_config_file: str = "dj_schedule_config.json"):
+        self.schedule_config_file = schedule_config_file
+        self.schedule = self.load_dj_schedule()
+
+    def load_dj_schedule(self) -> List[Dict]:
+        """
+        Load DJ schedule from configuration file
+        """
+        try:
+            with open(self.schedule_config_file, 'r') as f:
+                config = json.load(f)
+            return config.get("schedules", [])
+        except FileNotFoundError:
+            print(f"Warning: DJ schedule config file {self.schedule_config_file} not found. Using empty schedule.")
+            return []
+        except json.JSONDecodeError as e:
+            print(f"Error parsing DJ schedule config: {e}. Using empty schedule.")
+            return []
 
     def calculate_spot_positions(self, playlist_data: Dict) -> List[Dict]:
         """
-        Calculate where to place DJ spots in the playlist
+        Calculate where to place DJ spots based on configured schedule times
         """
-        total_duration_seconds = playlist_data.get("total_duration_seconds", 0)
         songs = playlist_data.get("songs", [])
-
-        if not songs:
+        if not songs or not self.schedule:
             return []
 
-        total_duration_minutes = total_duration_seconds / 60
-        num_spots = int(total_duration_minutes / self.minutes_between_spots)
-
-        spots = []
-        accumulated_duration = 0
-        songs_per_spot = max(1, len(songs) // (num_spots + 1))
-
-        # Use playlist start time from config if available, otherwise use current time
+        # Get playlist start time
         config = playlist_data.get("config", {})
         if config.get("playlist_start_time"):
-            current_time = datetime.fromisoformat(config["playlist_start_time"]).replace(second=0, microsecond=0)
+            playlist_start = datetime.fromisoformat(config["playlist_start_time"]).replace(second=0, microsecond=0)
         else:
-            current_time = datetime.now().replace(second=0, microsecond=0)
+            playlist_start = datetime.now().replace(second=0, microsecond=0)
 
-        # Reset daily content tracking for new playlist
-        self.used_content_today = set()
+        spots = []
 
-        # Determine if this is a weekday (Monday=0, Sunday=6)
-        is_weekday = current_time.weekday() < 5
+        # Calculate cumulative durations for each song
+        cumulative_durations = []
+        total_duration = 0
+        for song in songs:
+            total_duration += song.get("duration_seconds", 180)
+            cumulative_durations.append(total_duration)
 
-        for i in range(num_spots):
-            song_index = (i + 1) * songs_per_spot
+        # Process each scheduled DJ spot
+        for spot_number, schedule_item in enumerate(self.schedule, 1):
+            target_time_str = schedule_item.get("time", "")
+            content_tags = schedule_item.get("content", [])
 
-            if song_index < len(songs):
-                for j in range(min(song_index, len(songs))):
-                    accumulated_duration += songs[j].get("duration_seconds", 180)
+            # Parse target time (format: "615" or "6:15")
+            target_time = self.parse_time_string(target_time_str)
+            if target_time is None:
+                continue
 
-                spot_time = current_time + timedelta(seconds=accumulated_duration)
+            # Calculate target time as datetime
+            target_datetime = playlist_start.replace(hour=target_time[0], minute=target_time[1], second=0, microsecond=0)
+
+            # If target time is before playlist start, skip to next day
+            if target_datetime < playlist_start:
+                target_datetime += timedelta(days=1)
+
+            # Calculate seconds from playlist start to target time
+            target_seconds = (target_datetime - playlist_start).total_seconds()
+
+            # Find the best song insertion point
+            best_song_index = self.find_best_insertion_point(cumulative_durations, target_seconds)
+
+            if best_song_index is not None:
+                actual_time = playlist_start + timedelta(seconds=cumulative_durations[best_song_index-1] if best_song_index > 0 else 0)
 
                 spot = {
-                    "spot_number": i + 1,
-                    "after_song_index": song_index,
-                    "approximate_time": spot_time.strftime("%H:%M"),
-                    "accumulated_minutes": accumulated_duration / 60,
-                    "type": self.determine_spot_type(spot_time, is_weekday)
+                    "spot_number": spot_number,
+                    "after_song_index": best_song_index,
+                    "approximate_time": actual_time.strftime("%H:%M"),
+                    "target_time": target_time_str,
+                    "accumulated_minutes": cumulative_durations[best_song_index-1] / 60 if best_song_index > 0 else 0,
+                    "content_tags": content_tags,
+                    "type": self.determine_spot_type_from_tags(content_tags)
                 }
                 spots.append(spot)
 
         return spots
 
-    def determine_spot_type(self, spot_time: datetime, is_weekday: bool = True) -> str:
+    def parse_time_string(self, time_str: str) -> tuple:
         """
-        Determine what type of DJ spot based on time of day
-        For weekdays, prioritize daily content during 6-8am and 4-6pm
+        Parse time string in format "615" or "6:15" to (hour, minute)
         """
-        hour = spot_time.hour
-        types = []
-
-        # Weekday morning content (6-8am)
-        if is_weekday and hour in [6, 7, 8]:
-            # Check for unused daily morning content
-            available_morning = [content for content in self.daily_morning_content
-                               if content not in self.used_content_today]
-            if available_morning:
-                selected = random.choice(available_morning)
-                self.used_content_today.add(selected)
-                return selected
+        try:
+            if ":" in time_str:
+                hour, minute = map(int, time_str.split(":"))
             else:
-                # Fallback to regular morning content
-                types.extend(["morning_greeting", "weather", "daily_schedule", "motivation"])
+                # Format like "615" -> 6:15
+                if len(time_str) == 3:
+                    hour = int(time_str[0])
+                    minute = int(time_str[1:3])
+                elif len(time_str) == 4:
+                    hour = int(time_str[0:2])
+                    minute = int(time_str[2:4])
+                else:
+                    return None
 
-        # Weekday evening content (4-6pm)
-        elif is_weekday and hour in [16, 17, 18]:
-            # Check for unused daily evening content
-            available_evening = [content for content in self.daily_evening_content
-                               if content not in self.used_content_today]
-            if available_evening:
-                selected = random.choice(available_evening)
-                self.used_content_today.add(selected)
-                return selected
-            else:
-                # Fallback to regular evening content
-                types.extend(["evening_greeting", "dinner_suggestion", "afternoon_boost"])
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return (hour, minute)
+            return None
+        except (ValueError, IndexError):
+            return None
 
-        # Regular time-based content (weekends or non-priority hours)
-        elif hour == 7:
-            types.extend(["morning_greeting", "weather", "daily_schedule", "today_events"])
-        elif hour in [8, 9]:
-            types.extend(["time_check", "motivation", "fun_fact", "today_events"])
-        elif hour == 12:
-            types.extend(["lunch_reminder", "afternoon_greeting", "tonight_preview"])
-        elif hour in [15, 16]:
-            types.extend(["afternoon_boost", "trivia", "joke", "tonight_preview", "event_mention"])
-        elif hour == 18:
-            types.extend(["evening_greeting", "dinner_suggestion", "tonight_events"])
-        elif hour >= 20:
-            types.extend(["evening_wind_down", "tomorrow_preview", "event_mention"])
-        else:
-            types.extend(["time_check", "music_info", "random_thought", "event_mention"])
+    def find_best_insertion_point(self, cumulative_durations: List[int], target_seconds: float) -> int:
+        """
+        Find the song index that provides the closest insertion point to target time
+        """
+        if not cumulative_durations:
+            return None
 
-        # Add event mention possibility at top of hour
-        if spot_time.minute == 0:
-            types.append("hour_announcement")
-            if random.random() < 0.3:  # 30% chance of event mention at top of hour
-                types.append("event_mention")
+        # If target is before first song ends, insert after first song
+        if target_seconds <= cumulative_durations[0]:
+            return 1
 
-        return random.choice(types) if types else "general"
+        # If target is after all songs, insert after last song
+        if target_seconds >= cumulative_durations[-1]:
+            return len(cumulative_durations)
+
+        # Find the closest insertion point
+        best_index = 1
+        best_diff = abs(target_seconds - cumulative_durations[0])
+
+        for i, duration in enumerate(cumulative_durations):
+            diff = abs(target_seconds - duration)
+            if diff < best_diff:
+                best_diff = diff
+                best_index = i + 1
+
+        return best_index
+
+    def determine_spot_type_from_tags(self, content_tags: List[str]) -> str:
+        """
+        Determine DJ spot type based on content tags from configuration
+        Returns the primary content tag or a random one if multiple tags
+        """
+        if not content_tags:
+            return "general"
+
+        # Map content tags to internal types
+        tag_mapping = {
+            "weather": "weather",
+            "events": "event_mention",
+            "motivation": "motivation",
+            "facts": "fun_fact",
+            "jokes": "joke"
+        }
+
+        # Convert tags to internal types
+        internal_types = [tag_mapping.get(tag, tag) for tag in content_tags]
+
+        # Return a random type from the configured content
+        return random.choice(internal_types)
 
     def generate_spot_requirements(self, spots: List[Dict], config: Dict, playlist_data: Dict = None) -> Dict:
         """
-        Generate requirements for each DJ spot
+        Generate requirements for each DJ spot based on configuration
         """
         day_name = config.get("day_name", "Today")
         weather = config.get("weather", "clear")
@@ -171,6 +212,8 @@ class DJSpotPlanner:
                 "spot_number": spot["spot_number"],
                 "type": spot["type"],
                 "approximate_time": spot["approximate_time"],
+                "target_time": spot.get("target_time", ""),
+                "content_tags": spot.get("content_tags", []),
                 # Preserve placement info so assembler can insert audio correctly
                 "after_song_index": spot.get("after_song_index"),
                 "accumulated_minutes": spot.get("accumulated_minutes"),
@@ -195,6 +238,7 @@ class DJSpotPlanner:
             "total_spots": len(spot_requirements),
             "spots": spot_requirements,
             "config": config,
+            "schedule_config_file": self.schedule_config_file,
             "created_at": datetime.now().isoformat()
         }
 
@@ -203,37 +247,11 @@ class DJSpotPlanner:
         Determine the tone for the DJ spot
         """
         tone_map = {
-            "morning_greeting": "cheerful and welcoming",
             "weather": "informative and pleasant",
-            "daily_schedule": "organized and helpful",
-            "time_check": "casual and friendly",
             "motivation": "inspiring and upbeat",
             "fun_fact": "curious and engaging",
-            "lunch_reminder": "caring and casual",
-            "afternoon_boost": "energetic and encouraging",
-            "trivia": "playful and interesting",
             "joke": "lighthearted and funny",
-            "evening_greeting": "warm and relaxed",
-            "dinner_suggestion": "thoughtful and appetizing",
-            "evening_wind_down": "calm and soothing",
-            "tomorrow_preview": "optimistic and forward-looking",
-            "hour_announcement": "clear and pleasant",
-            "music_info": "knowledgeable and enthusiastic",
-            "random_thought": "philosophical and thought-provoking",
-            # New daily content types
-            "dad_joke": "lighthearted and playful",
-            "kid_fact": "educational and enthusiastic",
-            "history_fact": "engaging and informative",
-            "animal_fact": "fun and fascinating",
-            "global_fact": "worldly and interesting",
-            "country_comparison": "insightful and curious",
-            "weird_fact": "amusing and surprising",
-            "gross_fact": "playfully disgusted but entertaining",
-            # Event-related content types
             "event_mention": "excited and informative",
-            "today_events": "helpful and encouraging",
-            "tonight_events": "anticipatory and enthusiastic",
-            "tonight_preview": "forward-looking and energetic",
             "general": "friendly and engaging"
         }
 
@@ -244,46 +262,21 @@ class DJSpotPlanner:
         Get elements to include based on spot type
         """
         elements_map = {
-            "morning_greeting": ["greeting", "day_name", "positive_message"],
             "weather": ["current_weather", "temperature", "weather_advice"],
-            "daily_schedule": ["time", "day_activities", "reminder"],
-            "time_check": ["current_time", "time_context"],
             "motivation": ["inspirational_quote", "encouragement"],
             "fun_fact": ["interesting_fact", "did_you_know"],
-            "lunch_reminder": ["time", "meal_suggestion", "break_reminder"],
-            "afternoon_boost": ["energy_boost", "stretch_reminder"],
-            "trivia": ["trivia_question", "trivia_answer"],
             "joke": ["setup", "punchline"],
-            "evening_greeting": ["evening_greeting", "day_reflection"],
-            "dinner_suggestion": ["meal_idea", "recipe_tip"],
-            "evening_wind_down": ["relaxation_tip", "gratitude"],
-            "tomorrow_preview": ["tomorrow_weather", "tomorrow_tip"],
-            "hour_announcement": ["hour", "time_message"],
-            "music_info": ["artist_fact", "genre_info", "music_history"],
-            "random_thought": ["philosophical_question", "observation"],
-            # New daily content types
-            "dad_joke": ["setup", "punchline", "family_friendly"],
-            "kid_fact": ["fun_fact", "educational_content", "age_appropriate"],
-            "history_fact": ["historical_event", "interesting_context", "did_you_know"],
-            "animal_fact": ["animal_behavior", "fun_fact", "nature_info"],
-            "global_fact": ["world_culture", "international_info", "global_perspective"],
-            "country_comparison": ["cultural_difference", "interesting_contrast", "world_perspective"],
-            "weird_fact": ["unusual_fact", "surprising_info", "quirky_knowledge"],
-            "gross_fact": ["icky_but_interesting", "science_fact", "eww_factor"],
-            # Event-related content types
             "event_mention": ["event_details", "time_reference", "location_info"],
-            "today_events": ["today_schedule", "event_highlights", "timing_info"],
-            "tonight_events": ["evening_plans", "event_preview", "time_details"],
-            "tonight_preview": ["evening_outlook", "event_teaser", "anticipation"],
             "general": ["greeting", "music_transition"]
         }
 
         return elements_map.get(spot_type, ["general_content"])
 
 def plan_dj_spots(playlist_file: str = "curated_playlist.json",
-                  config_file: str = "playlist_config.json") -> Dict:
+                  config_file: str = "playlist_config.json",
+                  schedule_config_file: str = "dj_schedule_config.json") -> Dict:
     """
-    Main function to plan DJ spots
+    Main function to plan DJ spots using configuration-based scheduling
     """
     # Check if we have a playlist_dir in config (from step 1)
     with open(config_file, 'r') as f:
@@ -308,7 +301,7 @@ def plan_dj_spots(playlist_file: str = "curated_playlist.json",
     # Add config to playlist_data so calculate_spot_positions can access start time
     playlist_data["config"] = config
 
-    planner = DJSpotPlanner(minutes_between_spots=20)
+    planner = DJSpotPlanner(schedule_config_file=schedule_config_file)
 
     spots = planner.calculate_spot_positions(playlist_data)
     spot_requirements = planner.generate_spot_requirements(spots, config, playlist_data)
@@ -326,9 +319,15 @@ def plan_dj_spots(playlist_file: str = "curated_playlist.json",
 
 def main():
     """
-    Read playlist and output DJ spot plan
+    Read playlist and output DJ spot plan using configuration-based scheduling
     """
-    spot_plan = plan_dj_spots()
+    import argparse
+    parser = argparse.ArgumentParser(description="Plan DJ spots using schedule configuration")
+    parser.add_argument("--schedule-config", default="dj_schedule_config.json",
+                       help="DJ schedule configuration file")
+    args = parser.parse_args()
+
+    spot_plan = plan_dj_spots(schedule_config_file=args.schedule_config)
 
     # Get playlist directory from spot plan or use current directory
     if "playlist_dir" in spot_plan:
@@ -350,9 +349,12 @@ def main():
     with open(output_file, "w") as f:
         json.dump(spot_plan, f, indent=2)
 
-    print(f"Planned {spot_plan['total_spots']} DJ spots")
+    print(f"Planned {spot_plan['total_spots']} DJ spots using schedule configuration")
     for spot in spot_plan['spots']:
-        print(f"  Spot {spot['spot_number']}: {spot['type']} at ~{spot['approximate_time']}")
+        content_tags = ', '.join(spot.get('content_tags', []))
+        target_time = spot.get('target_time', 'N/A')
+        actual_time = spot.get('approximate_time', 'N/A')
+        print(f"  Spot {spot['spot_number']}: {spot['type']} (target: {target_time}, actual: ~{actual_time}) - Content: [{content_tags}]")
     print(f"Saved to: {output_file}")
 
     return spot_plan

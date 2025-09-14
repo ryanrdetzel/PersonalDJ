@@ -212,7 +212,7 @@ def select_playlist_config(start_datetime: datetime = None) -> Dict:
         config["playlist_start_time"] = now.isoformat()
         config["playlist_start_hour"] = now.hour
 
-    config["playlist_duration_hours"] = 8
+    config["playlist_duration_hours"] = 15
     config["songs_per_hour"] = 15
     config["total_songs"] = config["playlist_duration_hours"] * config["songs_per_hour"]
 

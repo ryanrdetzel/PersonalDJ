@@ -1,0 +1,24 @@
+{
+  "schedules": [
+    {
+      "time": "830",
+      "content": ["weather", "events", "motivation"]
+    },
+    {
+      "time": "840",
+      "content": ["facts", "jokes"]
+    },
+    {
+      "time": "850",
+      "content": ["weather", "events"]
+    },
+    {
+      "time": "900",
+      "content": ["facts", "motivation"]
+    },
+    {
+      "time": "905",
+      "content": ["weather", "jokes", "events"]
+    }
+  ]
+}
