@@ -12,9 +12,10 @@ PersonalDJ builds daily, fully‑controlled music playlists with short, natural 
   - `6_playlist_assembler.py` — assembles final `.m3u` and a streaming list.
 - Utility scripts:
   - `process_music.py` — scans files, extracts metadata (Mutagen), populates `music_history.db`.
+  - `complete_metadata.py` — enriches incomplete song metadata using multiple online sources.
   - `list_genres.py` — prints available genres and counts from the DB.
 - Data and output:
-  - `music/` — your organized library. `music/unprocessed/` is where new files start.
+  - `music/` — your music library directory containing all audio files.
   - `playlists/YYYY-MM-DD/` — dated outputs (JSON artifacts + final M3U).
   - `dj_spots/YYYY-MM-DD/` — generated DJ MP3s.
   - `streaming/stream.m3u` — streaming‑friendly list pointing to local files.
@@ -47,30 +48,133 @@ All artifacts for a run land under `playlists/<date>/`: config, curated songs, s
 ## Setup
 - Requirements
   - Python 3.10+
-  - Packages: `openai`, `python-dotenv` (optional), `mutagen`
+  - Packages: `openai`, `python-dotenv`, `requests`, `icalendar`, `python-dateutil`, `ffmpeg-python`, `mutagen`, `musicbrainzngs`
+  - Optional: `fpcalc` tool for audio fingerprinting (part of Chromaprint)
   - SQLite (standard with Python)
 
 - Install
   - `pip install -r requirements.txt`
-  - Also install Mutagen (used by `process_music.py`): `pip install mutagen`
+  - For audio fingerprinting (optional): Install Chromaprint tools
+    - macOS: `brew install chromaprint`
+    - Ubuntu/Debian: `sudo apt install libchromaprint-tools`
+    - Windows: Download from https://acoustid.org/chromaprint
 
 - OpenAI (optional but recommended)
   - Export your key: `export OPENAI_API_KEY=sk-...`
   - Without a key, scripts are still generated (fallback text), and TTS can be skipped.
 
 ## Prepare Your Library
-1) Put raw files in `music/unprocessed/` (any of: mp3, m4a/mp4/aac, flac, wav, ogg).
+1) Put your music files in the `music/` directory (any of: mp3, m4a/mp4/aac, flac, wav, ogg).
 2) Process and index into the library/DB:
    - `python process_music.py`
    - Options:
-     - `--unprocessed` path to scan (default `music/unprocessed`)
-     - `--music-dir` target library root (default `music`)
+     - `--music-dir` path to scan (default `music`)
      - `--db` path to SQLite DB (default `music_history.db`)
 3) See available genres: `./list_genres.py`
 
 Notes
-- Files are organized as `music/<Artist>/<Album>/<original-filename>` and deduplicated by hash.
+- Files are processed from their current locations and indexed into the database without moving them.
 - The DB stores key metadata (title, artist, album, genre, duration, bitrate, year) and play history.
+- Duplicate detection is performed using file hashes to avoid processing the same file twice.
+
+## Complete Missing Metadata
+After processing your music library, you may find some songs have incomplete metadata (missing genres, years, etc.). Use the metadata completion script to enrich this information from multiple online sources:
+
+### Basic Usage
+```bash
+# Show current metadata completeness statistics
+python complete_metadata.py --stats-only
+
+# Complete metadata for all songs (uses MusicBrainz and path inference)
+python complete_metadata.py
+
+# Process only a limited number of songs (good for testing)
+python complete_metadata.py --limit 10
+
+# Update database only (don't modify file tags)
+python complete_metadata.py --no-file-update
+```
+
+### With API Keys (Better Results)
+For more accurate metadata completion, set up free API keys:
+
+```bash
+# Set environment variables for better results
+export ACOUSTID_API_KEY="your_key"        # Audio fingerprinting
+export LASTFM_API_KEY="your_key"          # Genre tags and community data
+export SPOTIFY_CLIENT_ID="your_id"        # Detailed track info
+export SPOTIFY_CLIENT_SECRET="your_secret"
+
+python complete_metadata.py
+```
+
+### Available Sources
+- **MusicBrainz** (free, no key needed) - Comprehensive music database
+- **Path inference** (free) - Extracts metadata from file/folder names
+- **AcoustID** (free API key + fpcalc tool) - Audio fingerprinting for accurate identification
+- **Spotify** (free API key) - Genre, popularity, and detailed track info
+- **Last.fm** (free API key) - Community tags and listening data
+
+### Getting API Keys
+- **AcoustID**: https://acoustid.org/new-application
+- **Last.fm**: https://www.last.fm/api/account/create
+- **Spotify**: https://developer.spotify.com/dashboard/applications
+
+### Installing AcoustID Fingerprinting (Optional)
+For the most accurate track identification, install the Chromaprint tools:
+
+- **macOS**: `brew install chromaprint`
+- **Ubuntu/Debian**: `sudo apt install libchromaprint-tools`
+- **Windows**: Download from https://acoustid.org/chromaprint
+
+This provides the `fpcalc` command-line tool needed for audio fingerprinting.
+
+### Features
+- **Smart metadata merging** from multiple sources
+- **Preserves existing good data** while replacing "Unknown" values
+- **Updates both database and file tags**
+- **Rate limiting** to respect free API quotas
+- **Progress tracking** with detailed output
+- **Direct API calls** - no Python library dependencies for fingerprinting
+
+The script automatically identifies songs with missing genres, unknown artists/albums, or missing years and attempts to complete this information using the available sources.
+
+## Audio Normalization (LUFS)
+PersonalDJ includes professional audio normalization to ensure consistent volume levels across your entire music library using the EBU R128 loudness standard (LUFS).
+
+### Normalize Your Library
+After processing files into your library, normalize them for consistent playback volume:
+
+- **Normalize all files to -14 LUFS** (industry standard, same as Spotify/YouTube):
+  ```bash
+  python process_music.py --normalize
+  ```
+
+- **Use a different target LUFS** (e.g., -16 for quieter, -12 for louder):
+  ```bash
+  python process_music.py --normalize --target-lufs -16.0
+  ```
+
+- **Re-normalize already processed files** (force update):
+  ```bash
+  python process_music.py --normalize --force-normalize
+  ```
+
+- **Check normalization status**:
+  ```bash
+  python process_music.py --normalize-stats
+  ```
+
+### Features
+- **Two-pass LUFS normalization** using FFmpeg's `loudnorm` filter for optimal quality
+- **Automatic backup creation** with `_original` suffix before modifying files
+- **Smart processing** - skips files already within 0.5 LUFS of target
+- **Database tracking** of normalization status with before/after LUFS values
+- **No quality loss** - prevents clipping and distortion while normalizing
+
+### Requirements
+- FFmpeg must be installed on your system (`brew install ffmpeg` on macOS, `apt install ffmpeg` on Ubuntu)
+- The `ffmpeg-python` package is included in requirements.txt
 
 ## Run The Whole Pipeline
 Use the orchestrator to run all steps and produce playlists:

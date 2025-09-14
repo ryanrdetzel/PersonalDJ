@@ -6,6 +6,7 @@ streaming/
 *.db
 *.m3u
 cache/
+README.private.md
 # Root-level generated artifacts (back-compat files)
 playlist_config.json
 curated_playlist.json
